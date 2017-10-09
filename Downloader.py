@@ -41,7 +41,6 @@ class Downloader:
         self.timeout = timeout
 
         self.__content_size = 0
-        self.__content_type = ""
         self.__file_lock = threading.Lock()
         self.__downloaded_size = 0
         self.__threads_info = {}
@@ -54,7 +53,6 @@ class Downloader:
         print("建立连接中......")
         hdr = requests.head(url).headers
         self.__content_size = int(hdr["Content-Length"])
-        self.__content_type = hdr["Content-Type"]
         self.__downloaded_size = 0
         print("连接已经建立.\n文件大小：{}B".format(self.__content_size))
 
