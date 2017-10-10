@@ -45,9 +45,10 @@ class Downloader:
 
         self.__content_size = 0
         self.__file_lock = threading.Lock()
-        self.__downloaded_size = 0
         self.__threads_status = {}
-        self.__logger_event = multiprocessing.Event()
+        self.__msg_queue = multiprocessing.Queue()
+
+        self.__logger = Logger(msgq=self.__msg_queue)
 
         requests.adapters.DEFAULT_RETRIES = 2
 
@@ -57,7 +58,6 @@ class Downloader:
         print("建立连接中......")
         hdr = requests.head(url).headers
         self.__content_size = int(hdr["Content-Length"])
-        self.__downloaded_size = 0
         print("连接已经建立.\n文件大小：{}B".format(self.__content_size))
 
     def __page_dispatcher(self):
@@ -95,7 +95,7 @@ class Downloader:
             "Range": "bytes={}-{}".format(page["start_pos"], page["end_pos"])
         }
         thread_name = threading.current_thread().name
-        # 初始化进程信息列表
+        # 初始化当前进程信息列表
         self.__threads_status[thread_name] = {
             "page_size": page["end_pos"] - page["start_pos"],
             "page": page,
@@ -116,49 +116,16 @@ class Downloader:
                         file.seek(page["start_pos"])
                         # 写入文件
                         file.write(data)
-                        self.__downloaded_size += len(data)
                     # 数据流每向前流动一次,将文件指针同时前移
                     page["start_pos"] += len(data)
                     self.__threads_status[thread_name]["page"] = page
-                    print("{}唤醒logger".format(thread_name))
-                    self.__logger_event.set()
-        except Exception as e:
-            print(e, file=sys.stderr)
-            self.__threads_status[thread_name]["status"] = 1
+                    print("{}向logger队列传输数据".format(thread_name))
+                    self.__msg_queue.put(self.__threads_status)
 
-    def __log_status(self):
-        while True:
-            # 等待log事件
-            self.__logger_event.wait()
-            # print("\033c")
-            print("文件元信息:\nURL: {}\n文件名:{}".format(
-                self.__threads_status["url"],
-                self.__threads_status["target_file"]
-            ))
-            print("下载中......")
-            for thread_name, thread_status in self.__threads_status.items():
-                if thread_name not in ("url", "target_file"):
-                    page_size = thread_status["page_size"]
-                    page = thread_status["page"]
-                    status = thread_status["status"]
-                    if status == 0:
-                        if page["start_pos"] < page["end_pos"]:
-                            print("|- {}  Downloaded: {}KB / Chunk: {}KB".format(
-                                thread_name,
-                                (page_size - (page["end_pos"] -
-                                              page["start_pos"])) / 1024,
-                                page_size / 1024,
-                            ))
-                        else:
-                            print("|=> {} Finished.".format(thread_name))
-                    elif status == 1:
-                        print("|XXX {} Crushed.".format(thread_name))
-            print("Downloaded: {}KB / Total: {}KB".format(
-                self.__downloaded_size / 1024,
-                self.__content_size / 1024
-            ))
-            # 清除log事件
-            self.__logger_event.clear()
+        except requests.RequestException as exception:
+            print("XXX From {}: ".format(exception), file=sys.stderr)
+            self.__msg_queue.put(self.__threads_status)
+            self.__threads_status[thread_name]["status"] = 1
 
     def start(self, url, target_file, urlhandler=lambda u: u):
         """开始下载
@@ -175,13 +142,9 @@ class Downloader:
         self.__establish_connect(url)
         self.__threads_status["url"] = url
         self.__threads_status["target_file"] = target_file
+        self.__threads_status["content_size"] = self.__content_size
         # logger进程
-        logger_process = multiprocessing.Process(
-            target=self.__log_status,
-            args=(),
-            daemon=True
-        )
-        logger_process.start()
+        self.__logger.start()
         with open(target_file, "wb+") as file:
             for page in self.__page_dispatcher():
                 thd = threading.Thread(
@@ -191,18 +154,91 @@ class Downloader:
                 thread_list.append(thd)
             for thd in thread_list:
                 thd.join()
+        # 结束logger进程
+        self.__logger.join(1)
         # 记录下载总计用时
         span = time.time() - start_time
         self.__threads_status = {}
-        logger_process.join()
-        print("总计用时:{}s".format(span))
+        print("总计用时:{}s".format(span - 1))
+
+
+class Logger(multiprocessing.Process):
+    """日志进程
+
+    记录每个线程的下载状态以及文件下载状态
+    """
+
+    def __init__(self, msgq):
+        """初始化日志记录器
+
+            :param msgq: 下载进程与日志进程通信的队列
+        """
+        multiprocessing.Process.__init__(self, daemon=True)
+        self.__threads_status = {}
+        self.__msg_queue = msgq
+
+    def __log_metainfo(self):
+        """输出文件元信息
+        """
+        print("文件元信息:\nURL: {}\n文件名:{}\n文件大小:{}KB".format(
+            self.__threads_status["url"],
+            self.__threads_status["target_file"],
+            self.__threads_status["content_size"] / 1024
+        ))
+
+    def __log_threadinfo(self):
+        """输出各线程下载状态信息
+        """
+        print("下载中......")
+        downloaded_size = 0
+        for thread_name, thread_status in self.__threads_status.items():
+            if thread_name not in ("url", "target_file", "content_size"):
+                page_size = thread_status["page_size"]
+                page = thread_status["page"]
+                status = thread_status["status"]
+                thread_downloaded_size = page_size - \
+                    (page["end_pos"] - page["start_pos"])
+                downloaded_size += thread_downloaded_size
+                if status == 0:
+                    if page["start_pos"] < page["end_pos"]:
+                        print("|- {}  Downloaded: {}KB / Chunk: {}KB".format(
+                            thread_name,
+                            (page_size - (page["end_pos"] -
+                                          page["start_pos"])) / 1024,
+                            page_size / 1024,
+                        ))
+                    else:
+                        print("|=> {} Finished.".format(thread_name))
+                elif status == 1:
+                    print("|XXX {} Crushed.".format(
+                        thread_name
+                    ), file=sys.stderr)
+        self.__log_generalinfo(downloaded_size)
+
+    def __log_generalinfo(self, downloaded_size):
+        """记录文件整体下载信息
+
+            :param downloaded_size: 整个文件已经下载的字节数
+        """
+        print("已下载: {}KB / Total: {}KB".format(
+            downloaded_size / 1024,
+            self.__threads_status["content_size"] / 1024
+        ))
+
+    def run(self):
+        while True:
+            if self.__msg_queue.qsize() != 0:
+                print("\033c")
+                self.__threads_status = self.__msg_queue.get()
+                self.__log_metainfo()
+                self.__log_threadinfo()
 
 
 if __name__ == '__main__':
-    downloader = Downloader(
-        threads_num=20
+    DOWNLOADER = Downloader(
+        threads_num=100
     )
-    downloader.start(
+    DOWNLOADER.start(
         url="http://fjyd.sc.chinaz.com/Files/DownLoad/pic9/201709/bpic3616.rar",
         target_file="/tmp/tmp.rar",
     )
