@@ -30,7 +30,7 @@ class Downloader:
     downloader.start()
     """
 
-    def __init__(self, threads_num=20, chunk_size=1024 * 128, timeout=60):
+    def __init__(self, threads_num=20, chunk_size=1024 * 128, timeout=0):
         """初始化
 
             :param threads_num=20: 下载线程数
@@ -41,7 +41,7 @@ class Downloader:
         """
         self.threads_num = threads_num
         self.chunk_size = chunk_size
-        self.timeout = timeout
+        self.timeout = timeout if timeout != 0 else threads_num  # 超时时间正比于线程数
 
         self.__content_size = 0
         self.__file_lock = threading.Lock()
@@ -119,7 +119,6 @@ class Downloader:
                     # 数据流每向前流动一次,将文件指针同时前移
                     page["start_pos"] += len(data)
                     self.__threads_status[thread_name]["page"] = page
-                    print("{}向logger队列传输数据".format(thread_name))
                     self.__msg_queue.put(self.__threads_status)
 
         except requests.RequestException as exception:
@@ -185,11 +184,11 @@ class Logger(multiprocessing.Process):
             self.__threads_status["target_file"],
             self.__threads_status["content_size"] / 1024
         ))
+        print("下载中......")
 
     def __log_threadinfo(self):
         """输出各线程下载状态信息
         """
-        print("下载中......")
         downloaded_size = 0
         for thread_name, thread_status in self.__threads_status.items():
             if thread_name not in ("url", "target_file", "content_size"):
@@ -236,9 +235,9 @@ class Logger(multiprocessing.Process):
 
 if __name__ == '__main__':
     DOWNLOADER = Downloader(
-        threads_num=100
+        threads_num=10
     )
     DOWNLOADER.start(
-        url="http://fjyd.sc.chinaz.com/Files/DownLoad/pic9/201709/bpic3616.rar",
-        target_file="/tmp/tmp.rar",
+        url="http://download.virtualbox.org/virtualbox/5.1.28/virtualbox-5.1_5.1.28-117968~Ubuntu~trusty_amd64.deb",
+        target_file="/tmp/tmp.mp4",
     )
