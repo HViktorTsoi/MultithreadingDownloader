@@ -116,7 +116,7 @@ class Downloader:
                         file.seek(page["start_pos"])
                         # 写入文件
                         file.write(data)
-                    # 数据流每向前流动一次,将文件指针同时前移
+                    # 数据流每向前流动一次,将指针位置同时前移
                     page["start_pos"] += len(data)
                     self.__threads_status[thread_name]["page"] = page
                     self.__msg_queue.put(self.__threads_status)
@@ -142,12 +142,14 @@ class Downloader:
         self.__threads_status["url"] = url
         self.__threads_status["target_file"] = target_file
         self.__threads_status["content_size"] = self.__content_size
+        # 处理url
+        url = urlhandler(url)
         # logger进程
         self.__logger.start()
         with open(target_file, "wb+") as file:
             for page in self.__page_dispatcher():
                 thd = threading.Thread(
-                    target=self.__download, args=(urlhandler(url), file, page)
+                    target=self.__download, args=(url, file, page)
                 )
                 thd.start()
                 thread_list.append(thd)
