@@ -156,11 +156,11 @@ class Downloader:
             for thd in thread_list:
                 thd.join()
         # 结束logger进程
-        self.__logger.join(1)
+        self.__logger.join(0.5)
         # 记录下载总计用时
         span = time.time() - start_time
         self.__threads_status = {}
-        print("总计用时:{}s".format(span - 1))
+        print("总计用时:{}s".format(span - 0.5))
 
 
 class Logger(multiprocessing.Process):
@@ -186,7 +186,6 @@ class Logger(multiprocessing.Process):
             self.__threads_status["target_file"],
             self.__threads_status["content_size"] / 1024
         ))
-        print("下载中......")
 
     def __log_threadinfo(self):
         """输出各线程下载状态信息
@@ -196,32 +195,48 @@ class Logger(multiprocessing.Process):
             if thread_name not in ("url", "target_file", "content_size"):
                 page_size = thread_status["page_size"]
                 page = thread_status["page"]
-                status = thread_status["status"]
                 thread_downloaded_size = page_size - \
                     (page["end_pos"] - page["start_pos"])
                 downloaded_size += thread_downloaded_size
-                if status == 0:
-                    if page["start_pos"] < page["end_pos"]:
-                        print("|- {}  Downloaded: {}KB / Chunk: {}KB".format(
-                            thread_name,
-                            (page_size - (page["end_pos"] -
-                                          page["start_pos"])) / 1024,
-                            page_size / 1024,
-                        ))
-                    else:
-                        print("|=> {} Finished.".format(thread_name))
-                elif status == 1:
-                    print("|XXX {} Crushed.".format(
-                        thread_name
-                    ), file=sys.stderr)
-        self.__log_generalinfo(downloaded_size)
+                self.__print_thread_status(
+                    thread_name, thread_status["status"], page_size,
+                    page, thread_downloaded_size
+                )
+        self.__print_generalinfo(downloaded_size)
 
-    def __log_generalinfo(self, downloaded_size):
-        """记录文件整体下载信息
+    def __print_thread_status(self, thread_name, status, page_size, page, thread_downloaded_size):
+        """打印线程信息
+
+            :param thread_name: 线程名
+
+            :param status: 线程执行状态
+
+            :param page_size: 分页大小
+
+            :param page: 分页信息
+
+            :param thread_downloaded_size: 线程已经下载的字节数
+        """
+        if status == 0:
+            if page["start_pos"] < page["end_pos"]:
+                print("|- {}  Downloaded: {}KB / Chunk: {}KB".format(
+                    thread_name,
+                    thread_downloaded_size / 1024,
+                    page_size / 1024,
+                ))
+            else:
+                print("|=> {} Finished.".format(thread_name))
+        elif status == 1:
+            print("|XXX {} Crushed.".format(
+                thread_name
+            ), file=sys.stderr)
+
+    def __print_generalinfo(self, downloaded_size):
+        """打印文件整体下载信息
 
             :param downloaded_size: 整个文件已经下载的字节数
         """
-        print("已下载: {}KB / Total: {}KB".format(
+        print("|__已下载: {}KB / Total: {}KB".format(
             downloaded_size / 1024,
             self.__threads_status["content_size"] / 1024
         ))
