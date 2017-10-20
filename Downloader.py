@@ -65,21 +65,19 @@ class Downloader:
         """
         # 基础分页大小
         basic_page_size = self.__content_size // self.threads_num
-        pages = []
         start_pos = 0
         # 分配给各线程的页面大小
         while start_pos + basic_page_size < self.__content_size:
-            pages.append({
+            yield {
                 'start_pos': start_pos,
                 'end_pos': start_pos + basic_page_size
-            })
+            }
             start_pos += basic_page_size + 1
         # 最后不完整的一页补齐
-        pages.append({
+        yield {
             'start_pos': start_pos,
             'end_pos': self.__content_size - 1
-        })
-        return pages
+        }
 
     def __download(self, url, file, page):
         """下载
@@ -255,6 +253,6 @@ if __name__ == '__main__':
         threads_num=10
     )
     DOWNLOADER.start(
-        url="http://download.virtualbox.org/virtualbox/5.1.28/virtualbox-5.1_5.1.28-117968~Ubuntu~trusty_amd64.deb",
-        target_file="/tmp/tmp.mp4",
+        url="http://fjyd.sc.chinaz.com/Files/DownLoad/pic9/201709/bpic3616.rar",
+        target_file="/tmp/tmp.rar",
     )
