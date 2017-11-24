@@ -30,7 +30,12 @@ class Downloader:
     downloader.start()
     """
 
-    def __init__(self, threads_num=20, chunk_size=1024 * 128, timeout=0):
+    def __init__(self,
+                 threads_num=20,
+                 chunk_size=1024 * 128,
+                 timeout=0,
+                 enable_log=True
+                 ):
         """初始化
 
             :param threads_num=20: 下载线程数
@@ -46,9 +51,11 @@ class Downloader:
         self.__content_size = 0
         self.__file_lock = threading.Lock()
         self.__threads_status = {}
+        self.__crash_event = threading.Event()
         self.__msg_queue = multiprocessing.Queue()
 
-        self.__logger = Logger(msgq=self.__msg_queue)
+        self.__enable_log = enable_log
+        self.__logger = Logger(msgq=self.__msg_queue) if enable_log else None
 
         requests.adapters.DEFAULT_RETRIES = 2
 
@@ -58,7 +65,7 @@ class Downloader:
         print("建立连接中......")
         hdr = requests.head(url).headers
         self.__content_size = int(hdr["Content-Length"])
-        print("连接已经建立.\n文件大小：{}B".format(self.__content_size))
+        print("连接已经建立. 文件大小：{}B".format(self.__content_size))
 
     def __page_dispatcher(self):
         """分配每个线程下载的页面大小
@@ -102,10 +109,10 @@ class Downloader:
         try:
             # 以流的方式进行get请求
             with closing(requests.get(
-                url=url,
-                headers=headers,
-                stream=True,
-                timeout=self.timeout
+                    url=url,
+                    headers=headers,
+                    stream=True,
+                    timeout=self.timeout
             )) as response:
                 for data in response.iter_content(chunk_size=self.chunk_size):
                     # 向目标文件中写入数据块,此处需要同步锁
@@ -117,33 +124,34 @@ class Downloader:
                     # 数据流每向前流动一次,将指针位置同时前移
                     page["start_pos"] += len(data)
                     self.__threads_status[thread_name]["page"] = page
-                    self.__msg_queue.put(self.__threads_status)
+                    if self.__enable_log:
+                        self.__msg_queue.put(self.__threads_status)
 
         except requests.RequestException as exception:
             print("XXX From {}: ".format(exception), file=sys.stderr)
-            self.__msg_queue.put(self.__threads_status)
             self.__threads_status[thread_name]["status"] = 1
+            if self.__enable_log:
+                self.__msg_queue.put(self.__threads_status)
+            # 设置crash_event标记为1
+            self.__crash_event.set()
 
-    def start(self, url, target_file, urlhandler=lambda u: u):
-        """开始下载
+    def __run(self, url, target_file, urlhandler):
+        """执行下载线程
 
             :param url="": 下载的目标URL
 
-            :param urlhandler=lambdau:u: 目标URL的处理器，用来处理重定向或Content-Type不存在等问题
+            :param target_file="": 保存在本地的目标文件名（完整路径，包括文件扩展名）
 
-            :param file="": 保存在本地的目标文件名（完整路径，包括文件扩展名）
+            :param urlhandler: 目标URL的处理器，用来处理重定向或Content-Type不存在等问题
         """
         thread_list = []
-        # 记录下载开始时间
-        start_time = time.time()
         self.__establish_connect(url)
         self.__threads_status["url"] = url
         self.__threads_status["target_file"] = target_file
         self.__threads_status["content_size"] = self.__content_size
+        self.__crash_event.clear()
         # 处理url
         url = urlhandler(url)
-        # logger进程
-        self.__logger.start()
         with open(target_file, "wb+") as file:
             for page in self.__page_dispatcher():
                 thd = threading.Thread(
@@ -153,12 +161,38 @@ class Downloader:
                 thread_list.append(thd)
             for thd in thread_list:
                 thd.join()
-        # 结束logger进程
-        self.__logger.join(0.5)
+        self.__threads_status = {}
+        # 判断是否有线程失败
+        if self.__crash_event.is_set():
+            raise Exception("下载未成功！！！")
+
+    def start(self, url, target_file, urlhandler=lambda u: u):
+        """开始下载
+
+            :param url="": 下载的目标URL
+
+            :param target_file="": 保存在本地的目标文件名（完整路径，包括文件扩展名）
+
+            :param urlhandler=lambdau:u: 目标URL的处理器，用来处理重定向或Content-Type不存在等问题
+        """
+        # 记录下载开始时间
+        start_time = time.time()
+
+        # 如果允许log
+        if self.__enable_log:
+            # logger进程
+            self.__logger.start()
+            # 开始下载
+            self.__run(url, target_file, urlhandler)
+            # 结束logger进程
+            self.__logger.join(0.5)
+        else:
+            # 直接开始下载
+            self.__run(url, target_file, urlhandler)
+
         # 记录下载总计用时
         span = time.time() - start_time
-        self.__threads_status = {}
-        print("总计用时:{}s".format(span - 0.5))
+        print("下载完成. 总计用时:{}s".format(span - 0.5))
 
 
 class Logger(multiprocessing.Process):
@@ -194,7 +228,7 @@ class Logger(multiprocessing.Process):
                 page_size = thread_status["page_size"]
                 page = thread_status["page"]
                 thread_downloaded_size = page_size - \
-                    (page["end_pos"] - page["start_pos"])
+                                         (page["end_pos"] - page["start_pos"])
                 downloaded_size += thread_downloaded_size
                 self.__print_thread_status(
                     thread_name, thread_status["status"], page_size,
@@ -253,6 +287,6 @@ if __name__ == '__main__':
         threads_num=10
     )
     DOWNLOADER.start(
-        url="http://fjyd.sc.chinaz.com/Files/DownLoad/pic9/201709/bpic3616.rar",
-        target_file="/tmp/tmp.rar",
+        url="http://download.unity3d.com/download_unity/linux/unity-editor-5.3.4f1+20160317_amd64.deb",
+        target_file="/apidiff/unity3d-5.3.4.deb",
     )
